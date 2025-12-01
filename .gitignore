@@ -1,0 +1,40 @@
+# Build Artifacts
+build/
+cmake-build-*/
+out/
+result
+
+# Compiled Objects and Libraries
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+
+# Executables
+tracezl
+
+# Dependencies (downloaded sources)
+openzl-src/
+openzl.tar.gz
+
+# Trace Data (Inputs and Outputs)
+*.trace
+*.champsimtrace
+*.xz
+*.zl
+*.restored
+
+# Training Artifacts
+*.config
+
+# IDE and Editor Configs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Nix
+.direnv/
