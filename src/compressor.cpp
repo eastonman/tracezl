@@ -18,6 +18,7 @@
 #include "openzl/cpp/Input.hpp"
 #include "openzl/zl_compress.h"
 #include "openzl/zl_compressor.h"
+#include "openzl/zl_decompress.h"
 #include "openzl/zl_errors.h"
 #include "openzl/zl_graph_api.h"
 #include "tools/io/InputSetBuilder.h"
@@ -296,12 +297,10 @@ void compress_trace(const std::string& trace_path, const std::string& output_pat
         size_t cSize = cctx.unwrap(res, "Compression failed");
         compressed.resize(cSize);
 
-        // Frame Format: [Size (8 bytes)][Data]
-        uint64_t frameSize = cSize;
-        outFile.write(reinterpret_cast<const char*>(&frameSize), sizeof(frameSize));
+        // Write compressed frame directly (OpenZL frames are self-describing)
         outFile.write(compressed.data(), cSize);
 
-        totalCompressed += sizeof(frameSize) + cSize;
+        totalCompressed += cSize;
         processed += toRead;
 
         std::cout << "\rProgress: " << (processed * 100 / totalSize) << "%" << std::flush;
@@ -340,50 +339,91 @@ void verify_trace(const std::string& trace_path, const std::string& compressed_p
     // Decompress Context
     DCtx dctx;
 
-    std::vector<char> origBuffer(chunk_size);
-    std::vector<char> compBuffer;  // Resizable
-
+    std::vector<char> origBuffer;
+    std::vector<char> buffer;
+    buffer.reserve(chunk_size + 4096); 
+    
+    size_t bufferPos = 0; 
     size_t compProcessed = 0;
     size_t origProcessed = 0;
 
-    while (compProcessed < compFileSize) {
-        // Read Compressed Frame Size
-        uint64_t cSize;
-        if (compFile.read(reinterpret_cast<char*>(&cSize), sizeof(cSize)).gcount() !=
-            sizeof(cSize)) {
-            throw std::runtime_error("Unexpected end of compressed file while reading frame size");
+    while (true) {
+        // Ensure we have data
+        if (buffer.size() - bufferPos < 64) { 
+             if (bufferPos > 0) {
+                 buffer.erase(buffer.begin(), buffer.begin() + bufferPos);
+                 bufferPos = 0;
+             }
+             size_t currentSize = buffer.size();
+             buffer.resize(currentSize + 64 * 1024);
+             compFile.read(buffer.data() + currentSize, 64 * 1024);
+             size_t read = compFile.gcount();
+             buffer.resize(currentSize + read);
+             
+             if (read == 0 && buffer.empty()) break;
         }
-        compProcessed += sizeof(cSize);
 
-        // Read Compressed Data
-        compBuffer.resize(cSize);
-        if (compFile.read(compBuffer.data(), cSize).gcount() != cSize) {
-            throw std::runtime_error("Unexpected end of compressed file while reading frame data");
+        if (buffer.empty()) break;
+
+        // Check frame size
+        ZL_Report sizeReport = ZL_getCompressedSize(buffer.data() + bufferPos, buffer.size() - bufferPos);
+        
+        if (ZL_isError(sizeReport)) {
+            if (compFile.eof()) {
+                 throw std::runtime_error("Corrupt compressed file or truncated frame header at offset " + std::to_string(compProcessed));
+            }
+            if (bufferPos > 0) {
+                 buffer.erase(buffer.begin(), buffer.begin() + bufferPos);
+                 bufferPos = 0;
+            }
+            size_t currentSize = buffer.size();
+            size_t toRead = 1024 * 1024; 
+            buffer.resize(currentSize + toRead);
+            compFile.read(buffer.data() + currentSize, toRead);
+            size_t read = compFile.gcount();
+            buffer.resize(currentSize + read);
+            continue;
         }
-        compProcessed += cSize;
+
+        size_t cSize = ZL_RES_value(sizeReport);
+
+        // Ensure full frame
+        while (buffer.size() - bufferPos < cSize) {
+            if (compFile.eof()) {
+                throw std::runtime_error("Unexpected EOF: Compressed frame requires " + std::to_string(cSize) + " bytes.");
+            }
+            if (bufferPos > 0) {
+                 buffer.erase(buffer.begin(), buffer.begin() + bufferPos);
+                 bufferPos = 0;
+            }
+            size_t needed = cSize - buffer.size();
+            size_t toRead = std::max(needed, size_t(1024 * 1024)); 
+            size_t currentSize = buffer.size();
+            buffer.resize(currentSize + toRead);
+            compFile.read(buffer.data() + currentSize, toRead);
+            size_t read = compFile.gcount();
+            buffer.resize(currentSize + read);
+        }
 
         // Decompress
-        std::string decompressed =
-            dctx.decompressSerial(std::string_view(compBuffer.data(), cSize));
+        std::string decompressed = dctx.decompressSerial(std::string_view(buffer.data() + bufferPos, cSize));
         size_t dSize = decompressed.size();
 
-        // Verify against original
-        // Ensure we have enough original data to compare
+        // Verify
         if (origProcessed + dSize > origFileSize) {
             throw std::runtime_error("Decompressed data exceeds original file size");
         }
 
-        // Read corresponding original chunk
-        // We might need to resize origBuffer if dSize > chunk_size (unlikely if we compressed
-        // chunks of chunk_size)
         if (dSize > origBuffer.size()) origBuffer.resize(dSize);
-
         origFile.read(origBuffer.data(), dSize);
+        
         if (memcmp(decompressed.data(), origBuffer.data(), dSize) != 0) {
             throw std::runtime_error("Content mismatch at offset " + std::to_string(origProcessed));
         }
 
         origProcessed += dSize;
+        bufferPos += cSize;
+        compProcessed += cSize;
 
         std::cout << "\rVerified: " << (compProcessed * 100 / compFileSize) << "%" << std::flush;
     }
@@ -421,84 +461,95 @@ void decompress_trace(const std::string& compressed_path, const std::string& out
     // Decompress Context
     DCtx dctx;
 
-    std::vector<char> compBuffer;
+    // Buffer for reading compressed data
+    // We need a buffer that can hold at least one compressed frame + some read ahead
+    std::vector<char> buffer;
+    buffer.reserve(chunk_size + 4096); 
+    
+    size_t bufferPos = 0; // Current position in buffer
     size_t compProcessed = 0;
     size_t totalDecompressed = 0;
 
-    // Try to detect framing format
-    // Read first 8 bytes
-    if (compFileSize < 8) throw std::runtime_error("File too small");
+    while (true) {
+        // Ensure we have some data to check header
+        if (buffer.size() - bufferPos < 64) { // 64 bytes is plenty for header check
+             // Move remaining data to front
+             if (bufferPos > 0) {
+                 buffer.erase(buffer.begin(), buffer.begin() + bufferPos);
+                 bufferPos = 0;
+             }
+             
+             // Read more
+             size_t currentSize = buffer.size();
+             buffer.resize(currentSize + 64 * 1024); // Read 64KB at a time
+             compFile.read(buffer.data() + currentSize, 64 * 1024);
+             size_t read = compFile.gcount();
+             buffer.resize(currentSize + read);
+             
+             if (read == 0 && buffer.empty()) break; // EOF and empty
+        }
 
-    uint64_t firstQWord;
-    compFile.read(reinterpret_cast<char*>(&firstQWord), 8);
-    compFile.seekg(0);
+        if (buffer.empty()) break;
 
-    // Check if first 4 bytes match ZStrong Magic Number (0xD7B1A5D6)
-    // Little Endian: D6 A5 B1 D7
-    uint32_t magic = 0xD7B1A5D6;
-    uint32_t fileMagic;
-    compFile.read(reinterpret_cast<char*>(&fileMagic), 4);
-    compFile.seekg(0);
+        // Check frame size
+        ZL_Report sizeReport = ZL_getCompressedSize(buffer.data() + bufferPos, buffer.size() - bufferPos);
+        
+        if (ZL_isError(sizeReport)) {
+            // If it's just that we need more data, read more
+            // OpenZL doesn't expose error codes easily as enum in C++ without include, 
+            // but generally if we have < header size it fails.
+            // If we are at EOF and still failing, it's corrupt.
+            if (compFile.eof()) {
+                 throw std::runtime_error("Corrupt compressed file or truncated frame header at offset " + std::to_string(compProcessed));
+            }
+            
+            // Read more data
+            if (bufferPos > 0) {
+                 buffer.erase(buffer.begin(), buffer.begin() + bufferPos);
+                 bufferPos = 0;
+            }
+            size_t currentSize = buffer.size();
+            size_t toRead = 1024 * 1024; // Read larger chunk
+            buffer.resize(currentSize + toRead);
+            compFile.read(buffer.data() + currentSize, toRead);
+            size_t read = compFile.gcount();
+            buffer.resize(currentSize + read);
+            continue;
+        }
 
-    bool hasSizePrefix = true;
-    if (fileMagic == magic) {
-        std::cout
-            << "File starts with ZStrong Magic Number. Assuming no size prefix (single chunk)."
-            << std::endl;
-        hasSizePrefix = false;
-    }
+        size_t cSize = ZL_RES_value(sizeReport);
 
-    if (!hasSizePrefix) {
-        // Assume single chunk
-        compBuffer.resize(compFileSize);
-        compFile.read(compBuffer.data(), compFileSize);
+        // Do we have the full frame?
+        while (buffer.size() - bufferPos < cSize) {
+            if (compFile.eof()) {
+                throw std::runtime_error("Unexpected EOF: Compressed frame requires " + std::to_string(cSize) + " bytes, but file ended.");
+            }
+            
+            // Need more data
+            if (bufferPos > 0) {
+                 buffer.erase(buffer.begin(), buffer.begin() + bufferPos);
+                 bufferPos = 0;
+            }
+            
+            size_t needed = cSize - buffer.size();
+            size_t toRead = std::max(needed, size_t(1024 * 1024)); 
+            
+            size_t currentSize = buffer.size();
+            buffer.resize(currentSize + toRead);
+            compFile.read(buffer.data() + currentSize, toRead);
+            size_t read = compFile.gcount();
+            buffer.resize(currentSize + read);
+        }
 
-        std::string decompressed =
-            dctx.decompressSerial(std::string_view(compBuffer.data(), compFileSize));
+        // Decompress
+        std::string decompressed = dctx.decompressSerial(std::string_view(buffer.data() + bufferPos, cSize));
         outFile.write(decompressed.data(), decompressed.size());
         totalDecompressed += decompressed.size();
-    } else {
-        while (compProcessed < compFileSize) {
-            // Read Compressed Frame Size
-            uint64_t cSize;
-            if (compFile.read(reinterpret_cast<char*>(&cSize), sizeof(cSize)).gcount() !=
-                sizeof(cSize)) {
-                break;  // EOF
-            }
-            compProcessed += sizeof(cSize);
 
-            // Sanity check cSize
-            if (cSize > ZL_compressBound(chunk_size) && cSize > 200 * 1024 * 1024) {
-                std::cerr << "Error: Compressed chunk size " << cSize << " is invalid (too large)."
-                          << std::endl;
-                throw std::runtime_error(
-                    "Corrupt compressed file: invalid chunk size or unknown format");
-            }
+        bufferPos += cSize;
+        compProcessed += cSize;
 
-            // Read Compressed Data
-            try {
-                compBuffer.resize(cSize);
-            } catch (const std::bad_alloc& e) {
-                throw std::runtime_error("Failed to allocate buffer for compressed chunk of size " +
-                                         std::to_string(cSize));
-            }
-
-            if (compFile.read(compBuffer.data(), cSize).gcount() != cSize) {
-                throw std::runtime_error(
-                    "Unexpected end of compressed file while reading frame data");
-            }
-            compProcessed += cSize;
-
-            // Decompress
-            std::string decompressed =
-                dctx.decompressSerial(std::string_view(compBuffer.data(), cSize));
-
-            outFile.write(decompressed.data(), decompressed.size());
-            totalDecompressed += decompressed.size();
-
-            std::cout << "\rProgress: " << (compProcessed * 100 / compFileSize) << "%"
-                      << std::flush;
-        }
+        std::cout << "\rProgress: " << (compProcessed * 100 / compFileSize) << "%" << std::flush;
     }
 
     std::cout << std::endl;
