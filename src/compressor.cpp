@@ -27,9 +27,6 @@ namespace {
 
 using namespace openzl;
 
-// Constants
-constexpr size_t CHUNK_SIZE = 100 * 1024 * 1024;  // 100MB chunks
-
 // Define tags for our fields
 enum FieldTag {
     TAG_IP = 0,
@@ -237,7 +234,7 @@ void train_compressor(const std::string& trace_path, const std::string& config_p
 }
 
 void compress_trace(const std::string& trace_path, const std::string& output_path,
-                    const std::string& config_path) {
+                    const std::string& config_path, size_t chunk_size) {
     std::cout << "Compressing " << trace_path << "..." << std::endl;
 
     // Load config
@@ -269,13 +266,13 @@ void compress_trace(const std::string& trace_path, const std::string& output_pat
     cctx.setParameter(CParam::StickyParameters, 1);
 
     // Chunk Processing
-    std::vector<char> buffer(CHUNK_SIZE);
+    std::vector<char> buffer(chunk_size);
     size_t processed = 0;
     size_t totalCompressed = 0;
 
     while (processed < totalSize) {
         size_t remaining = totalSize - processed;
-        size_t toRead = std::min(remaining, CHUNK_SIZE);
+        size_t toRead = std::min(remaining, chunk_size);
 
         // Ensure we align to instruction boundaries (64 bytes)
         // Though standard CHUNK_SIZE (100MB) is divisible by 64.
@@ -316,7 +313,7 @@ void compress_trace(const std::string& trace_path, const std::string& output_pat
 }
 
 void verify_trace(const std::string& trace_path, const std::string& compressed_path,
-                  const std::string& config_path) {
+                  const std::string& config_path, size_t chunk_size) {
     std::cout << "Verifying " << compressed_path << " against " << trace_path << "..." << std::endl;
 
     // Load config
@@ -343,7 +340,7 @@ void verify_trace(const std::string& trace_path, const std::string& compressed_p
     // Decompress Context
     DCtx dctx;
 
-    std::vector<char> origBuffer(CHUNK_SIZE);
+    std::vector<char> origBuffer(chunk_size);
     std::vector<char> compBuffer;  // Resizable
 
     size_t compProcessed = 0;
@@ -377,8 +374,8 @@ void verify_trace(const std::string& trace_path, const std::string& compressed_p
         }
 
         // Read corresponding original chunk
-        // We might need to resize origBuffer if dSize > CHUNK_SIZE (unlikely if we compressed
-        // chunks of CHUNK_SIZE)
+        // We might need to resize origBuffer if dSize > chunk_size (unlikely if we compressed
+        // chunks of chunk_size)
         if (dSize > origBuffer.size()) origBuffer.resize(dSize);
 
         origFile.read(origBuffer.data(), dSize);
@@ -399,7 +396,7 @@ void verify_trace(const std::string& trace_path, const std::string& compressed_p
 }
 
 void decompress_trace(const std::string& compressed_path, const std::string& output_path,
-                      const std::string& config_path) {
+                      const std::string& config_path, size_t chunk_size) {
     std::cout << "Decompressing " << compressed_path << " to " << output_path << "..." << std::endl;
 
     // Load config
@@ -471,7 +468,7 @@ void decompress_trace(const std::string& compressed_path, const std::string& out
             compProcessed += sizeof(cSize);
 
             // Sanity check cSize
-            if (cSize > ZL_compressBound(CHUNK_SIZE) && cSize > 200 * 1024 * 1024) {
+            if (cSize > ZL_compressBound(chunk_size) && cSize > 200 * 1024 * 1024) {
                 std::cerr << "Error: Compressed chunk size " << cSize << " is invalid (too large)."
                           << std::endl;
                 throw std::runtime_error(

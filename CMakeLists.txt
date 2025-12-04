@@ -17,6 +17,8 @@ find_library(LIB_TOOLS_TRAINING tools_training REQUIRED)
 find_library(LIB_TOOLS_IO tools_io REQUIRED)
 find_library(LIB_LOGGER logger REQUIRED)
 
+find_package(CLI11 REQUIRED)
+
 add_executable(tracezl
     src/main.cpp
     src/compressor.cpp
@@ -29,6 +31,7 @@ target_link_libraries(tracezl PRIVATE
     ${LIB_LOGGER}
     OpenZL::openzl_cpp
     OpenZL::openzl
+    CLI11::CLI11
 )
 
 target_include_directories(tracezl PRIVATE

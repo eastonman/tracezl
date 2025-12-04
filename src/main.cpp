@@ -1,81 +1,78 @@
 #include <iostream>
 #include <string>
+#include <CLI/CLI.hpp>
 #include "compressor.h"
 
-void print_usage(const char* prog_name) {
-    std::cerr << "Usage: " << prog_name << " <command> [options]\n"
-              << "Commands:\n"
-              << "  train <trace_file> <output_config>\n"
-              << "  compress <trace_file> <output_file> <config_file>\n";
-}
-
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        print_usage(argv[0]);
-        return 1;
-    }
+    CLI::App app{"tracezl - Trace Compression Tool using OpenZL"};
+    app.require_subcommand(1);
 
-    std::string command = argv[1];
+    // Common variables used across subcommands
+    std::string trace_path;
+    std::string config_path;
+    std::string output_path;
+    std::string compressed_path;
+    size_t chunk_size = 100 * 1024 * 1024; // Default 100MB
 
-    if (command == "train") {
-        if (argc != 4) {
-            print_usage(argv[0]);
-            return 1;
-        }
-        std::string trace_path = argv[2];
-        std::string config_path = argv[3];
+    // Train command
+    auto train = app.add_subcommand("train", "Train the compressor model");
+    train->add_option("trace_file", trace_path, "Path to the input trace file")->required();
+    train->add_option("output_config", config_path, "Path to save the output configuration")->required();
+    train->callback([&]() {
         try {
             train_compressor(trace_path, config_path);
         } catch (const std::exception& e) {
             std::cerr << "Error during training: " << e.what() << "\n";
-            return 1;
+            exit(1);
         }
-    } else if (command == "compress") {
-        if (argc != 5) {
-            print_usage(argv[0]);
-            return 1;
-        }
-        std::string trace_path = argv[2];
-        std::string output_path = argv[3];
-        std::string config_path = argv[4];
+    });
+
+    // Compress command
+    auto compress = app.add_subcommand("compress", "Compress a trace file");
+    compress->add_option("trace_file", trace_path, "Path to the input trace file")->required();
+    compress->add_option("output_file", output_path, "Path to save the compressed output")->required();
+    compress->add_option("config_file", config_path, "Path to the configuration file")->required();
+    compress->add_option("-s,--chunk-size", chunk_size, "Chunk size in bytes (default: 100MB)");
+    compress->callback([&]() {
         try {
-            compress_trace(trace_path, output_path, config_path);
+            compress_trace(trace_path, output_path, config_path, chunk_size);
         } catch (const std::exception& e) {
              std::cerr << "Error during compression: " << e.what() << "\n";
-             return 1;
+             exit(1);
         }
-    } else if (command == "decompress") {
-        if (argc != 5) {
-            print_usage(argv[0]);
-            return 1;
-        }
-        std::string compressed_path = argv[2];
-        std::string output_path = argv[3];
-        std::string config_path = argv[4];
+    });
+    
+    // Decompress command
+    auto decompress = app.add_subcommand("decompress", "Decompress a trace file");
+    decompress->add_option("compressed_file", compressed_path, "Path to the compressed input file")->required();
+    decompress->add_option("output_file", output_path, "Path to save the decompressed trace")->required();
+    decompress->add_option("config_file", config_path, "Path to the configuration file")->required();
+    decompress->add_option("-s,--chunk-size", chunk_size, "Chunk size in bytes (default: 100MB)");
+    decompress->callback([&]() {
         try {
-            decompress_trace(compressed_path, output_path, config_path);
+            decompress_trace(compressed_path, output_path, config_path, chunk_size);
         } catch (const std::exception& e) {
              std::cerr << "Error during decompression: " << e.what() << "\n";
-             return 1;
+             exit(1);
         }
-    } else if (command == "verify") {
-        if (argc != 5) {
-            print_usage(argv[0]);
-            return 1;
-        }
-        std::string trace_path = argv[2];
-        std::string compressed_path = argv[3];
-        std::string config_path = argv[4];
+    });
+
+    // Verify command
+    auto verify = app.add_subcommand("verify", "Verify compression integrity");
+    verify->add_option("trace_file", trace_path, "Path to the original trace file")->required();
+    verify->add_option("compressed_file", compressed_path, "Path to the compressed file")->required();
+    verify->add_option("config_file", config_path, "Path to the configuration file")->required();
+    verify->add_option("-s,--chunk-size", chunk_size, "Chunk size in bytes (default: 100MB)");
+    verify->callback([&]() {
         try {
-            verify_trace(trace_path, compressed_path, config_path);
+            verify_trace(trace_path, compressed_path, config_path, chunk_size);
         } catch (const std::exception& e) {
              std::cerr << "Error during verification: " << e.what() << "\n";
-             return 1;
+             exit(1);
         }
-    } else {
-        std::cerr << "Unknown command: " << command << "\n";
-        return 1;
-    }
+    });
+
+    CLI11_PARSE(app, argc, argv);
 
     return 0;
 }

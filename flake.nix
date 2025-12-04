@@ -84,7 +84,7 @@ find_dependency(zstd)"
           src = ./.;
 
           nativeBuildInputs = [ pkgs.cmake ];
-          buildInputs = [ openzl pkgs.zstd ];
+          buildInputs = [ openzl pkgs.zstd pkgs.cli11 ];
 
           cmakeFlags = [
             "-DOPENZL_ROOT=${openzl}"
@@ -96,6 +96,7 @@ find_dependency(zstd)"
             pkgs.cmake
             pkgs.gcc
             pkgs.git
+            pkgs.cli11
             openzl
           ];
         };
