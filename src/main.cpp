@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <thread>
 #include <CLI/CLI.hpp>
 #include "compressor.h"
 
@@ -13,6 +14,8 @@ int main(int argc, char** argv) {
     std::string output_path;
     std::string compressed_path;
     size_t chunk_size = 100 * 1024 * 1024; // Default 100MB
+    size_t num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 4;
 
     // Train command
     auto train = app.add_subcommand("train", "Train the compressor model");
@@ -33,9 +36,10 @@ int main(int argc, char** argv) {
     compress->add_option("output_file", output_path, "Path to save the compressed output")->required();
     compress->add_option("config_file", config_path, "Path to the configuration file")->required();
     compress->add_option("-s,--chunk-size", chunk_size, "Chunk size in bytes (default: 100MB)");
+    compress->add_option("-t,--threads", num_threads, "Number of threads to use (default: hardware concurrency)");
     compress->callback([&]() {
         try {
-            compress_trace(trace_path, output_path, config_path, chunk_size);
+            compress_trace(trace_path, output_path, config_path, chunk_size, num_threads);
         } catch (const std::exception& e) {
              std::cerr << "Error during compression: " << e.what() << "\n";
              exit(1);
@@ -48,9 +52,10 @@ int main(int argc, char** argv) {
     decompress->add_option("output_file", output_path, "Path to save the decompressed trace")->required();
     decompress->add_option("config_file", config_path, "Path to the configuration file")->required();
     decompress->add_option("-s,--chunk-size", chunk_size, "Chunk size in bytes (default: 100MB)");
+    decompress->add_option("-t,--threads", num_threads, "Number of threads to use (default: hardware concurrency)");
     decompress->callback([&]() {
         try {
-            decompress_trace(compressed_path, output_path, config_path, chunk_size);
+            decompress_trace(compressed_path, output_path, config_path, chunk_size, num_threads);
         } catch (const std::exception& e) {
              std::cerr << "Error during decompression: " << e.what() << "\n";
              exit(1);

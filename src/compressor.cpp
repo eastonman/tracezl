@@ -23,6 +23,7 @@
 #include "openzl/zl_graph_api.h"
 #include "tools/io/InputSetBuilder.h"
 #include "tools/training/train.h"
+#include "tools/training/utils/thread_pool.h"
 
 namespace {
 
@@ -235,8 +236,8 @@ void train_compressor(const std::string& trace_path, const std::string& config_p
 }
 
 void compress_trace(const std::string& trace_path, const std::string& output_path,
-                    const std::string& config_path, size_t chunk_size) {
-    std::cout << "Compressing " << trace_path << "..." << std::endl;
+                    const std::string& config_path, size_t chunk_size, size_t num_threads) {
+    std::cout << "Compressing " << trace_path << " with " << num_threads << " threads..." << std::endl;
 
     // Load config
     std::ifstream configFile(config_path, std::ios::binary | std::ios::ate);
@@ -246,7 +247,7 @@ void compress_trace(const std::string& trace_path, const std::string& output_pat
     std::string configData(configSize, '\0');
     configFile.read(&configData[0], configSize);
 
-    // Setup compressor
+    // Setup compressor (shared across threads)
     auto compressor = createCompressorFromSerialized(configData);
     compressor->setParameter(CParam::FormatVersion, ZL_MAX_FORMAT_VERSION);
 
@@ -260,50 +261,69 @@ void compress_trace(const std::string& trace_path, const std::string& output_pat
     std::ofstream outFile(output_path, std::ios::binary);
     if (!outFile) throw std::runtime_error("Cannot open output file");
 
-    // Context
-    CCtx cctx;
-    cctx.refCompressor(*compressor);
-    cctx.setParameter(CParam::FormatVersion, ZL_MAX_FORMAT_VERSION);
-    cctx.setParameter(CParam::StickyParameters, 1);
+    // Thread Pool
+    openzl::training::ThreadPool pool(num_threads);
+    std::deque<std::future<std::string>> futures;
+    const size_t max_queue_size = num_threads * 2;
 
-    // Chunk Processing
-    std::vector<char> buffer(chunk_size);
     size_t processed = 0;
     size_t totalCompressed = 0;
 
     while (processed < totalSize) {
+        // Flow control: if queue is full, write one result
+        if (futures.size() >= max_queue_size) {
+            std::string result = futures.front().get();
+            futures.pop_front();
+            
+            uint64_t frameSize = result.size(); // Though we don't write frame size prefix anymore? 
+            // Wait, in previous step I REMOVED the 8-byte size prefix.
+            // "Write compressed frame directly (OpenZL frames are self-describing)"
+            // So just write data.
+            outFile.write(result.data(), result.size());
+            totalCompressed += result.size();
+        }
+
         size_t remaining = totalSize - processed;
         size_t toRead = std::min(remaining, chunk_size);
 
-        // Ensure we align to instruction boundaries (64 bytes)
-        // Though standard CHUNK_SIZE (100MB) is divisible by 64.
-        if (toRead % 64 != 0) {
-            // Adjust toRead to be multiple of 64 if not at end
-            if (toRead < remaining) {
-                toRead = (toRead / 64) * 64;
-            }
+        // Align to 64 bytes
+        if (toRead % 64 != 0 && toRead < remaining) {
+            toRead = (toRead / 64) * 64;
         }
 
+        // Read chunk
+        std::vector<char> buffer(toRead);
         inFile.read(buffer.data(), toRead);
-
-        // cctx.compressSerial fails if refCompressor was called because it expects no graph to be
-        // set. ZL_CCtx_compress works with attached compressor.
-        size_t bound = ZL_compressBound(toRead);
-        std::string compressed(bound, '\0');
-
-        ZL_Report res =
-            ZL_CCtx_compress(cctx.get(), compressed.data(), bound, buffer.data(), toRead);
-
-        size_t cSize = cctx.unwrap(res, "Compression failed");
-        compressed.resize(cSize);
-
-        // Write compressed frame directly (OpenZL frames are self-describing)
-        outFile.write(compressed.data(), cSize);
-
-        totalCompressed += cSize;
         processed += toRead;
 
-        std::cout << "\rProgress: " << (processed * 100 / totalSize) << "%" << std::flush;
+        // Submit task
+        // We capture compressor by raw pointer. The main thread outlives the tasks.
+        Compressor* rawCompressor = compressor.get();
+        
+        futures.push_back(pool.run([rawCompressor, data = std::move(buffer)]() -> std::string {
+            CCtx cctx;
+            cctx.refCompressor(*rawCompressor);
+            cctx.setParameter(CParam::FormatVersion, ZL_MAX_FORMAT_VERSION);
+            cctx.setParameter(CParam::StickyParameters, 1); // Sticky local to this CCtx, fine.
+
+            size_t bound = ZL_compressBound(data.size());
+            std::string compressed(bound, '\0');
+
+            ZL_Report res = ZL_CCtx_compress(cctx.get(), compressed.data(), bound, data.data(), data.size());
+            size_t cSize = cctx.unwrap(res, "Compression failed");
+            compressed.resize(cSize);
+            return compressed;
+        }));
+
+        std::cout << "\rSubmitted: " << (processed * 100 / totalSize) << "%" << std::flush;
+    }
+
+    // Drain remaining futures
+    while (!futures.empty()) {
+        std::string result = futures.front().get();
+        futures.pop_front();
+        outFile.write(result.data(), result.size());
+        totalCompressed += result.size();
     }
 
     std::cout << std::endl;
@@ -436,8 +456,8 @@ void verify_trace(const std::string& trace_path, const std::string& compressed_p
 }
 
 void decompress_trace(const std::string& compressed_path, const std::string& output_path,
-                      const std::string& config_path, size_t chunk_size) {
-    std::cout << "Decompressing " << compressed_path << " to " << output_path << "..." << std::endl;
+                      const std::string& config_path, size_t chunk_size, size_t num_threads) {
+    std::cout << "Decompressing " << compressed_path << " to " << output_path << " with " << num_threads << " threads..." << std::endl;
 
     // Load config
     std::ifstream configFile(config_path, std::ios::binary | std::ios::ate);
@@ -458,35 +478,41 @@ void decompress_trace(const std::string& compressed_path, const std::string& out
     std::ofstream outFile(output_path, std::ios::binary);
     if (!outFile) throw std::runtime_error("Cannot open output file");
 
-    // Decompress Context
-    DCtx dctx;
+    // Thread Pool
+    openzl::training::ThreadPool pool(num_threads);
+    std::deque<std::future<std::string>> futures;
+    const size_t max_queue_size = num_threads * 2;
 
     // Buffer for reading compressed data
-    // We need a buffer that can hold at least one compressed frame + some read ahead
     std::vector<char> buffer;
     buffer.reserve(chunk_size + 4096); 
     
-    size_t bufferPos = 0; // Current position in buffer
+    size_t bufferPos = 0; 
     size_t compProcessed = 0;
     size_t totalDecompressed = 0;
 
     while (true) {
-        // Ensure we have some data to check header
-        if (buffer.size() - bufferPos < 64) { // 64 bytes is plenty for header check
-             // Move remaining data to front
+        // Flow control
+        if (futures.size() >= max_queue_size) {
+            std::string result = futures.front().get();
+            futures.pop_front();
+            outFile.write(result.data(), result.size());
+            totalDecompressed += result.size();
+        }
+
+        // Ensure we have data
+        if (buffer.size() - bufferPos < 64) { 
              if (bufferPos > 0) {
                  buffer.erase(buffer.begin(), buffer.begin() + bufferPos);
                  bufferPos = 0;
              }
-             
-             // Read more
              size_t currentSize = buffer.size();
-             buffer.resize(currentSize + 64 * 1024); // Read 64KB at a time
+             buffer.resize(currentSize + 64 * 1024); 
              compFile.read(buffer.data() + currentSize, 64 * 1024);
              size_t read = compFile.gcount();
              buffer.resize(currentSize + read);
              
-             if (read == 0 && buffer.empty()) break; // EOF and empty
+             if (read == 0 && buffer.empty()) break;
         }
 
         if (buffer.empty()) break;
@@ -495,21 +521,15 @@ void decompress_trace(const std::string& compressed_path, const std::string& out
         ZL_Report sizeReport = ZL_getCompressedSize(buffer.data() + bufferPos, buffer.size() - bufferPos);
         
         if (ZL_isError(sizeReport)) {
-            // If it's just that we need more data, read more
-            // OpenZL doesn't expose error codes easily as enum in C++ without include, 
-            // but generally if we have < header size it fails.
-            // If we are at EOF and still failing, it's corrupt.
             if (compFile.eof()) {
                  throw std::runtime_error("Corrupt compressed file or truncated frame header at offset " + std::to_string(compProcessed));
             }
-            
-            // Read more data
             if (bufferPos > 0) {
                  buffer.erase(buffer.begin(), buffer.begin() + bufferPos);
                  bufferPos = 0;
             }
             size_t currentSize = buffer.size();
-            size_t toRead = 1024 * 1024; // Read larger chunk
+            size_t toRead = 1024 * 1024; 
             buffer.resize(currentSize + toRead);
             compFile.read(buffer.data() + currentSize, toRead);
             size_t read = compFile.gcount();
@@ -519,21 +539,17 @@ void decompress_trace(const std::string& compressed_path, const std::string& out
 
         size_t cSize = ZL_RES_value(sizeReport);
 
-        // Do we have the full frame?
+        // Ensure full frame
         while (buffer.size() - bufferPos < cSize) {
             if (compFile.eof()) {
-                throw std::runtime_error("Unexpected EOF: Compressed frame requires " + std::to_string(cSize) + " bytes, but file ended.");
+                throw std::runtime_error("Unexpected EOF: Compressed frame requires " + std::to_string(cSize) + " bytes.");
             }
-            
-            // Need more data
             if (bufferPos > 0) {
                  buffer.erase(buffer.begin(), buffer.begin() + bufferPos);
                  bufferPos = 0;
             }
-            
             size_t needed = cSize - buffer.size();
             size_t toRead = std::max(needed, size_t(1024 * 1024)); 
-            
             size_t currentSize = buffer.size();
             buffer.resize(currentSize + toRead);
             compFile.read(buffer.data() + currentSize, toRead);
@@ -541,15 +557,27 @@ void decompress_trace(const std::string& compressed_path, const std::string& out
             buffer.resize(currentSize + read);
         }
 
-        // Decompress
-        std::string decompressed = dctx.decompressSerial(std::string_view(buffer.data() + bufferPos, cSize));
-        outFile.write(decompressed.data(), decompressed.size());
-        totalDecompressed += decompressed.size();
+        // Copy frame data for task
+        std::vector<char> frameData(buffer.begin() + bufferPos, buffer.begin() + bufferPos + cSize);
+
+        // Submit task
+        futures.push_back(pool.run([frame = std::move(frameData)]() -> std::string {
+            DCtx dctx;
+            return dctx.decompressSerial(std::string_view(frame.data(), frame.size()));
+        }));
 
         bufferPos += cSize;
         compProcessed += cSize;
 
-        std::cout << "\rProgress: " << (compProcessed * 100 / compFileSize) << "%" << std::flush;
+        std::cout << "\rSubmitted: " << (compProcessed * 100 / compFileSize) << "%" << std::flush;
+    }
+
+    // Drain
+    while (!futures.empty()) {
+        std::string result = futures.front().get();
+        futures.pop_front();
+        outFile.write(result.data(), result.size());
+        totalDecompressed += result.size();
     }
 
     std::cout << std::endl;
