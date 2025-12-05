@@ -7,8 +7,6 @@
 
 namespace tracezl {
 
-using namespace openzl;
-
 // Define tags for our fields
 enum FieldTag {
     TAG_IP = 0,
@@ -23,7 +21,8 @@ enum FieldTag {
 
 // Common helper functions
 ZL_Report traceDispatchFn(ZL_Graph* graph, ZL_Edge* inputEdges[], size_t numInputs) noexcept;
-ZL_GraphID registerGraph(Compressor& compressor);
-std::unique_ptr<Compressor> createCompressorFromSerialized(poly::string_view serialized);
+ZL_GraphID registerGraph(openzl::Compressor& compressor);
+std::unique_ptr<openzl::Compressor> createCompressorFromSerialized(
+    openzl::poly::string_view serialized);
 
 }  // namespace tracezl

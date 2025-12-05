@@ -11,8 +11,7 @@
 #include "openzl/zl_compress.h"
 #include "tools/training/utils/thread_pool.h"
 
-using namespace openzl;
-using namespace tracezl;
+// Removed using namespace
 
 void compress_trace(const std::string& trace_path, const std::string& output_path,
                     const std::string& config_path, size_t chunk_size, size_t num_threads) {
@@ -28,8 +27,8 @@ void compress_trace(const std::string& trace_path, const std::string& output_pat
     configFile.read(&configData[0], configSize);
 
     // Setup compressor (shared across threads)
-    auto compressor = createCompressorFromSerialized(configData);
-    compressor->setParameter(CParam::FormatVersion, ZL_MAX_FORMAT_VERSION);
+    auto compressor = tracezl::createCompressorFromSerialized(configData);
+    compressor->setParameter(openzl::CParam::FormatVersion, ZL_MAX_FORMAT_VERSION);
 
     // Open Input File
     std::ifstream inFile(trace_path, std::ios::binary | std::ios::ate);
@@ -74,13 +73,14 @@ void compress_trace(const std::string& trace_path, const std::string& output_pat
 
         // Submit task
         // We capture compressor by raw pointer. The main thread outlives the tasks.
-        Compressor* rawCompressor = compressor.get();
+        openzl::Compressor* rawCompressor = compressor.get();
 
         futures.push_back(pool.run([rawCompressor, data = std::move(buffer)]() -> std::string {
-            CCtx cctx;
+            openzl::CCtx cctx;
             cctx.refCompressor(*rawCompressor);
-            cctx.setParameter(CParam::FormatVersion, ZL_MAX_FORMAT_VERSION);
-            cctx.setParameter(CParam::StickyParameters, 1);  // Sticky local to this CCtx, fine.
+            cctx.setParameter(openzl::CParam::FormatVersion, ZL_MAX_FORMAT_VERSION);
+            cctx.setParameter(openzl::CParam::StickyParameters,
+                              1);  // Sticky local to this CCtx, fine.
 
             size_t bound = ZL_compressBound(data.size());
             std::string compressed(bound, '\0');

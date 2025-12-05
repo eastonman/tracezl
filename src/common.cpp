@@ -9,8 +9,6 @@
 
 namespace tracezl {
 
-using namespace openzl;
-
 // Dispatch function to split ChampSim trace struct into fields
 ZL_Report traceDispatchFn(ZL_Graph* graph, ZL_Edge* inputEdges[], size_t numInputs) noexcept {
     ZL_RESULT_DECLARE_SCOPE_REPORT(graph);
@@ -106,7 +104,7 @@ ZL_Report traceDispatchFn(ZL_Graph* graph, ZL_Edge* inputEdges[], size_t numInpu
     return ZL_returnSuccess();
 }
 
-ZL_GraphID registerGraph(Compressor& compressor) {
+ZL_GraphID registerGraph(openzl::Compressor& compressor) {
     // Create an ACE graph for each field type
     std::vector<ZL_GraphID> aceGraphs;
     for (int i = 0; i < NUM_TAGS; ++i) {
@@ -130,13 +128,13 @@ ZL_GraphID registerGraph(Compressor& compressor) {
     }
 
     // Parameterize the parsing graph with the ACE graphs as custom targets
-    GraphParameters params = {.customGraphs = std::move(aceGraphs)};
+    openzl::GraphParameters params = {.customGraphs = std::move(aceGraphs)};
 
     return compressor.parameterizeGraph(parsingGraph.value(), params);
 }
 
-std::unique_ptr<Compressor> createCompressorFromSerialized(poly::string_view serialized) {
-    auto compressor = std::make_unique<Compressor>();
+std::unique_ptr<openzl::Compressor> createCompressorFromSerialized(openzl::poly::string_view serialized) {
+    auto compressor = std::make_unique<openzl::Compressor>();
     registerGraph(*compressor);
     compressor->deserialize(serialized);
     return compressor;

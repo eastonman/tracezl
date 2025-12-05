@@ -11,8 +11,7 @@
 #include "openzl/zl_decompress.h"
 #include "tools/training/utils/thread_pool.h"
 
-using namespace openzl;
-using namespace tracezl;
+// Removed using namespace
 
 void decompress_trace(const std::string& compressed_path, const std::string& output_path,
                       const std::string& config_path, size_t chunk_size, size_t num_threads) {
@@ -27,7 +26,7 @@ void decompress_trace(const std::string& compressed_path, const std::string& out
     std::string configData(configSize, '\0');
     configFile.read(&configData[0], configSize);
 
-    auto compressor = createCompressorFromSerialized(configData);
+    auto compressor = tracezl::createCompressorFromSerialized(configData);
 
     // Open Files
     std::ifstream compFile(compressed_path, std::ios::binary | std::ios::ate);
@@ -126,7 +125,7 @@ void decompress_trace(const std::string& compressed_path, const std::string& out
 
         // Submit task
         futures.push_back(pool.run([frame = std::move(frameData)]() -> std::string {
-            DCtx dctx;
+            openzl::DCtx dctx;
             return dctx.decompressSerial(std::string_view(frame.data(), frame.size()));
         }));
 

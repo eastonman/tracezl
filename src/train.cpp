@@ -8,8 +8,7 @@
 #include "compressor.h"
 #include "tools/io/InputSetBuilder.h"
 
-using namespace openzl;
-using namespace tracezl;
+// Removed using namespace directives
 
 void train_compressor(const std::string& trace_path, const std::string& config_path,
                       size_t num_threads) {
@@ -23,18 +22,19 @@ void train_compressor(const std::string& trace_path, const std::string& config_p
     auto inputs = std::move(builder).build();
 
     // Prepare base compressor
-    Compressor compressor;
-    ZL_GraphID startGraph = registerGraph(compressor);
+    openzl::Compressor compressor;
+    ZL_GraphID startGraph = tracezl::registerGraph(compressor);
 
     // Select starting graph
     openzl::unwrap(ZL_Compressor_selectStartingGraphID(compressor.get(), startGraph),
                    "Failed to select starting graph");
 
     // Train Params
-    openzl::training::TrainParams params = {.compressorGenFunc = createCompressorFromSerialized,
-                                            .threads = (uint32_t)num_threads,
-                                            .noClustering = true,
-                                            .paretoFrontier = true};
+    openzl::training::TrainParams params = {
+        .compressorGenFunc = tracezl::createCompressorFromSerialized,
+        .threads = (uint32_t)num_threads,
+        .noClustering = true,
+        .paretoFrontier = true};
 
     // Convert inputs
     auto multiInputs = openzl::training::inputSetToMultiInputs(*inputs);
