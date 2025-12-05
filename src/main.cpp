@@ -21,9 +21,10 @@ int main(int argc, char** argv) {
     auto train = app.add_subcommand("train", "Train the compressor model");
     train->add_option("trace_file", trace_path, "Path to the input trace file")->required();
     train->add_option("output_config", config_path, "Path to save the output configuration")->required();
+    train->add_option("-t,--threads", num_threads, "Number of threads to use (default: hardware concurrency)");
     train->callback([&]() {
         try {
-            train_compressor(trace_path, config_path);
+            train_compressor(trace_path, config_path, num_threads);
         } catch (const std::exception& e) {
             std::cerr << "Error during training: " << e.what() << "\n";
             exit(1);
@@ -68,6 +69,7 @@ int main(int argc, char** argv) {
     verify->add_option("compressed_file", compressed_path, "Path to the compressed file")->required();
     verify->add_option("config_file", config_path, "Path to the configuration file")->required();
     verify->add_option("-s,--chunk-size", chunk_size, "Chunk size in bytes (default: 100MB)");
+    verify->add_option("-t,--threads", num_threads, "Number of threads to use (default: hardware concurrency)");
     verify->callback([&]() {
         try {
             verify_trace(trace_path, compressed_path, config_path, chunk_size);

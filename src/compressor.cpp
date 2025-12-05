@@ -21,6 +21,7 @@
 #include "openzl/zl_decompress.h"
 #include "openzl/zl_errors.h"
 #include "openzl/zl_graph_api.h"
+#include "openzl/codecs/zl_ace.h"
 #include "tools/io/InputSetBuilder.h"
 #include "tools/training/train.h"
 #include "tools/training/utils/thread_pool.h"
@@ -128,40 +129,29 @@ ZL_Report traceDispatchFn(ZL_Graph* graph, ZL_Edge* inputEdges[], size_t numInpu
 
         ZL_Edge* convertedEdge = convertEdges.edges[0];
 
-        // Set metadata for clustering to identify the field
-        ZL_ERR_IF_ERR(ZL_Edge_setIntMetadata(convertedEdge, ZL_CLUSTERING_TAG_METADATA_ID, i));
-
         outputEdges.push_back(convertedEdge);
     }
 
-    // Get custom graph (Clustering)
+    // Get custom graphs (ACE graphs for each field)
     ZL_GraphIDList customGraphs = ZL_Graph_getCustomGraphs(graph);
-    ZL_ERR_IF_NE(customGraphs.nbGraphIDs, 1, graphParameter_invalid);
+    ZL_ERR_IF_NE(customGraphs.nbGraphIDs, NUM_TAGS, graphParameter_invalid);
 
-    // Send all fields to the clustering graph
-    ZL_ERR_IF_ERR(ZL_Edge_setParameterizedDestination(outputEdges.data(), outputEdges.size(),
-                                                      customGraphs.graphids[0], NULL));
+    // Send each field to its dedicated ACE graph
+    for (int i = 0; i < NUM_TAGS; ++i) {
+        ZL_ERR_IF_ERR(ZL_Edge_setDestination(outputEdges[i], customGraphs.graphids[i]));
+    }
 
     return ZL_returnSuccess();
 }
 
 ZL_GraphID registerGraph(Compressor& compressor) {
-    // 1. Register the Clustering Graph
-    ZL_ClusteringConfig defaultConfig = {.nbClusters = 0, .nbTypeDefaults = 0};
+    // Create an ACE graph for each field type
+    std::vector<ZL_GraphID> aceGraphs;
+    for (int i = 0; i < NUM_TAGS; ++i) {
+        aceGraphs.push_back(ZL_Compressor_buildACEGraph(compressor.get()));
+    }
 
-    // Successors to try for each cluster
-    std::vector<ZL_GraphID> successors = {
-        ZL_GRAPH_STORE,             // Uncompressed
-        ZL_GRAPH_ZSTD,              // Zstd
-        ZL_GRAPH_COMPRESS_GENERIC,  // Generic OpenZL
-        // Delta encoding then LZ is good for addresses
-        ZL_Compressor_registerStaticGraph_fromNode1o(compressor.get(), ZL_NODE_DELTA_INT,
-                                                     ZL_GRAPH_FIELD_LZ)};
-
-    ZL_GraphID clusteringGraph = ZL_Clustering_registerGraph(compressor.get(), &defaultConfig,
-                                                             successors.data(), successors.size());
-
-    // 2. Register our Parsing/Dispatch Graph
+    // Register our Parsing/Dispatch Graph
     auto parsingGraphName = "ChampSimTraceParser";
     auto parsingGraph = compressor.getGraph(parsingGraphName);
 
@@ -177,9 +167,8 @@ ZL_GraphID registerGraph(Compressor& compressor) {
         parsingGraph = compressor.registerFunctionGraph(desc);
     }
 
-    // 3. Parameterize the parsing graph with the clustering graph as its custom target
-    std::vector<ZL_GraphID> customGraphs = {clusteringGraph};
-    GraphParameters params = {.customGraphs = std::move(customGraphs)};
+    // Parameterize the parsing graph with the ACE graphs as custom targets
+    GraphParameters params = {.customGraphs = std::move(aceGraphs)};
 
     return compressor.parameterizeGraph(parsingGraph.value(), params);
 }
@@ -193,8 +182,9 @@ std::unique_ptr<Compressor> createCompressorFromSerialized(poly::string_view ser
 
 }  // namespace
 
-void train_compressor(const std::string& trace_path, const std::string& config_path) {
-    std::cout << "Training compressor on " << trace_path << "..." << std::endl;
+void train_compressor(const std::string& trace_path, const std::string& config_path,
+                      size_t num_threads) {
+    std::cout << "Training compressor on " << trace_path << " with " << num_threads << " threads..." << std::endl;
 
     // Prepare input
     // We use InputSetBuilder to load the file
@@ -213,8 +203,9 @@ void train_compressor(const std::string& trace_path, const std::string& config_p
     // Train Params
     openzl::training::TrainParams params = {
         .compressorGenFunc = createCompressorFromSerialized,
-        .threads = 4,
-        .clusteringTrainer = openzl::training::ClusteringTrainer::Greedy};
+        .threads = (uint32_t)num_threads,
+        .noClustering = true,
+        .paretoFrontier = true};
 
     // Convert inputs
     auto multiInputs = openzl::training::inputSetToMultiInputs(*inputs);
