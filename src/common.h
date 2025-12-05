@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+
 #include "openzl/cpp/Compressor.hpp"
 #include "openzl/zl_graph_api.h"
 
@@ -25,4 +26,4 @@ ZL_Report traceDispatchFn(ZL_Graph* graph, ZL_Edge* inputEdges[], size_t numInpu
 ZL_GraphID registerGraph(Compressor& compressor);
 std::unique_ptr<Compressor> createCompressorFromSerialized(poly::string_view serialized);
 
-} // namespace tracezl
+}  // namespace tracezl

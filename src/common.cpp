@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <vector>
+
 #include "champsim_trace.h"
 #include "openzl/codecs/zl_ace.h"
 #include "openzl/zl_errors.h"
@@ -141,4 +142,4 @@ std::unique_ptr<Compressor> createCompressorFromSerialized(poly::string_view ser
     return compressor;
 }
 
-} // namespace tracezl
+}  // namespace tracezl

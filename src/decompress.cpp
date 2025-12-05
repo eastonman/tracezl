@@ -1,13 +1,12 @@
-#include "compressor.h"
-#include "common.h"
-
-#include <iostream>
+#include <deque>
 #include <fstream>
+#include <future>
+#include <iostream>
 #include <stdexcept>
 #include <vector>
-#include <deque>
-#include <future>
 
+#include "common.h"
+#include "compressor.h"
 #include "openzl/cpp/DCtx.hpp"
 #include "openzl/zl_decompress.h"
 #include "tools/training/utils/thread_pool.h"

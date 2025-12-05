@@ -1,12 +1,12 @@
-#include "compressor.h"
-#include "common.h"
+#include "tools/training/train.h"
 
-#include <iostream>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 
+#include "common.h"
+#include "compressor.h"
 #include "tools/io/InputSetBuilder.h"
-#include "tools/training/train.h"
 
 using namespace openzl;
 using namespace tracezl;
