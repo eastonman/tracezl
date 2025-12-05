@@ -35,6 +35,8 @@ openzl.tar.gz
 *.swp
 *.swo
 .DS_Store
+.cache/clangd
+compile_commands.json
 
 # Nix
 .direnv/
