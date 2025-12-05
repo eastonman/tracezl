@@ -21,7 +21,10 @@ find_package(CLI11 REQUIRED)
 
 add_executable(tracezl
     src/main.cpp
-    src/compressor.cpp
+    src/common.cpp
+    src/train.cpp
+    src/compress.cpp
+    src/decompress.cpp
 )
 
 # Link against OpenZL core and tools
