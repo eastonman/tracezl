@@ -72,24 +72,6 @@ int main(int argc, char** argv) {
         }
     });
 
-    // Verify command
-    auto verify = app.add_subcommand("verify", "Verify compression integrity");
-    verify->add_option("trace_file", trace_path, "Path to the original trace file")->required();
-    verify->add_option("compressed_file", compressed_path, "Path to the compressed file")
-        ->required();
-    verify->add_option("config_file", config_path, "Path to the configuration file")->required();
-    verify->add_option("-s,--chunk-size", chunk_size, "Chunk size in bytes (default: 100MB)");
-    verify->add_option("-t,--threads", num_threads,
-                       "Number of threads to use (default: hardware concurrency)");
-    verify->callback([&]() {
-        try {
-            verify_trace(trace_path, compressed_path, config_path, chunk_size);
-        } catch (const std::exception& e) {
-            std::cerr << "Error during verification: " << e.what() << "\n";
-            exit(1);
-        }
-    });
-
     CLI11_PARSE(app, argc, argv);
 
     return 0;

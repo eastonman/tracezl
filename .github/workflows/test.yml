@@ -34,9 +34,6 @@ jobs:
                   echo "Compressing (Chunk size 10KB)..."
                   $BIN compress "$TRACE" "$COMPRESSED" "$CONFIG" --chunk-size 10240 --threads 2
 
-                  echo "Verifying..."
-                  $BIN verify "$TRACE" "$COMPRESSED" "$CONFIG"
-
                   echo "Decompressing..."
                   $BIN decompress "$COMPRESSED" "$DECOMPRESSED" "$CONFIG" --threads 2
 
